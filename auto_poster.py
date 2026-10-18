@@ -1,132 +1,151 @@
-import time
 import os
 import time
-import hashlib
-import json
 import requests
+import hashlib
+import hmac
 from dotenv import load_dotenv
 
+# Carregar variáveis de ambiente locais (se existirem)
 load_dotenv()
 
-# Configurações de Ambiente
-META_USER_TOKEN = os.getenv("META_USER_TOKEN")
-INSTAGRAM_ACCOUNT_ID = os.getenv("INSTAGRAM_ACCOUNT_ID")
+# --- VARIÁVEIS DE AMBIENTE ---
 SHOPEE_APP_KEY = os.getenv("SHOPEE_APP_KEY")
 SHOPEE_APP_SECRET = os.getenv("SHOPEE_APP_SECRET")
+META_USER_TOKEN = os.getenv("META_USER_TOKEN")
+INSTAGRAM_ACCOUNT_ID = os.getenv("INSTAGRAM_ACCOUNT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Definição dos Nichos e Palavras-chave de Busca
-NICHES = {
-    "skincare": ["sérum facial", "protetor solar", "creme hidratante", "skincare"],
-    "feminino": ["bolsa feminina", "maquiagem", "vestido", "acessórios femininos"],
-    "casa": ["organizador de casa", "decoração", "cozinha prática", "luminária led"]
+# Configuração de Nichos e Termos de Busca na Shopee
+NICHOS = {
+    "Skincare": "skincare serun protetor solar",
+    "Universo Feminino": "organizador maquiagem bolsa feminina",
+    "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-def get_shopee_products(keyword, limit=5):
-    """Busca produtos na API de Afiliados da Shopee baseados em palavra-chave."""
+# --- FUNÇÕES DA SHOPEE API ---
+def generate_shopee_signature(timestamp, payload):
+    base_string = f"{SHOPEE_APP_KEY}{timestamp}{payload}{SHOPEE_APP_SECRET}"
+    return hashlib.sha256(base_string.encode('utf-8')).hexdigest()
+
+def buscar_produto_shopee(keyword):
+    """Busca produtos na Shopee GraphQL e retorna o primeiro item com imagem e link de afiliado."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     timestamp = int(time.time())
-
+    
     query = """
     query {
-        shopeeOffers(keyword: "%s", limit: %d) {
+        productOfferV2(keyword: "%s", limit: 1) {
             nodes {
                 itemId
-                title
+                productName
                 imageUrl
                 offerLink
-                price
-                commissionRate
             }
         }
     }
-    """ % (keyword, limit)
+    """ % keyword
 
-    payload = json.dumps({"query": query})
-    factor = f"{SHOPEE_APP_KEY}{timestamp}{payload}{SHOPEE_APP_SECRET}"
-    signature = hashlib.sha256(factor.encode("utf-8")).hexdigest()
+    payload = query.replace("\n", "").replace("  ", "")
+    signature = generate_shopee_signature(timestamp, payload)
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"SHA256 Credential={SHOPEE_APP_KEY}, Timestamp={timestamp}, Signature={signature}",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "Authorization": f"SHA256 Credential={SHOPEE_APP_KEY}, Timestamp={timestamp}, Signature={signature}"
     }
 
     try:
-        response = requests.post(url, data=payload, headers=headers, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            nodes = data.get("data", {}).get("shopeeOffers", {}).get("nodes", [])
-            return nodes
-        else:
-            print(f"⚠️ Erro ao consultar Shopee para '{keyword}': Status {response.status_code}")
+        response = requests.post(url, json={"query": query}, headers=headers, timeout=15)
+        res_json = response.json()
+        nodes = res_json.get("data", {}).get("productOfferV2", {}).get("nodes", [])
+        if nodes:
+            item = nodes[0]
+            return {
+                "id": item.get("itemId"),
+                "title": item.get("productName"),
+                "image": item.get("imageUrl"),
+                "link": item.get("offerLink")
+            }
     except Exception as e:
-        print(f"❌ Exceção ao buscar na Shopee: {e}")
-    return []
+        print(f"❌ Erro ao buscar na Shopee para '{keyword}': {e}")
+    
+    return None
 
-def post_to_instagram(image_url, caption):
-    """Publica uma imagem com legenda no Instagram via Graph API."""
-    if not META_USER_TOKEN or not INSTAGRAM_ACCOUNT_ID:
-        print("❌ Credenciais do Meta não encontradas.")
+# --- FUNÇÃO DE ENVIO PARA O TELEGRAM (APROVAÇÃO) ---
+def enviar_para_aprovacao_telegram(image_url, caption, product_id):
+    """Envia a imagem, legenda e botões inline para aprovação no Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Variáveis do Telegram não configuradas. Pulando envio de aprovação.")
         return False
 
-    # 1. Criar Container de Mídia
-    container_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}/media"
-    payload_container = {
-        "image_url": image_url,
-        "caption": caption,
-        "access_token": META_USER_TOKEN
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    
+    # Botões interativos abaixo da foto
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Aprovar / Publicar", "callback_data": f"approve_{product_id}"},
+                {"text": "❌ Descartar", "callback_data": f"reject_{product_id}"}
+            ]
+        ]
     }
     
-    res_container = requests.post(container_url, data=payload_container)
-    if res_container.status_code != 200:
-        print(f"❌ Erro ao criar container de imagem no IG: {res_container.text}")
-        return False
-
-    creation_id = res_container.json().get("id")
-
-    # 2. Publicar Container
-    publish_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}/media_publish"
-    payload_publish = {
-        "creation_id": creation_id,
-        "access_token": META_USER_TOKEN
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "photo": image_url,
+        "caption": caption,
+        "reply_markup": keyboard
     }
+    
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+        if resp.status_code == 200:
+            print("📲 Produto enviado com sucesso para aprovação no Telegram!")
+            return True
+        else:
+            print(f"⚠️ Erro ao enviar para o Telegram: {resp.text}")
+    except Exception as e:
+        print(f"❌ Erro de conexão com o Telegram: {e}")
+    
+    return False
 
-    res_publish = requests.post(publish_url, data=payload_publish)
-    if res_publish.status_code == 200:
-        print("🚀 Post publicado no Instagram com sucesso!")
-        return True
-    else:
-        print(f"❌ Erro ao publicar no IG: {res_publish.text}")
-        return False
-
+# --- ROTINA PRINCIPAL DO AUTOPOSTER ---
 def run_autoposter():
-    print("🤖 Iniciando Rotina do AutoPoster...")
-    for niche_name, keywords in NICHES.items():
+    print("\n🤖 Iniciando Rotina do AutoPoster...")
+    
+    for niche_name, search_term in NICHOS.items():
         print(f"\n🔍 Processando Nicho: {niche_name.upper()}")
-        for kw in keywords:
-            products = get_shopee_products(kw, limit=1)
-            if products:
-                prod = products[0]
-                title = prod.get("title", "Achadinho Shopee")
-                link = prod.get("offerLink", "")
-                img = prod.get("imageUrl", "")
-
-                caption = f"✨ {title}\n\n🛍️ Confira e garanta o seu pelo link na bio!\n🔗 Link: {link}\n\n#{niche_name} #achadinhos #shopee #promoção"
-                
-                print(f"📌 Encontrado: {title}")
-                print(f"🖼️ Imagem: {img}")
-                # Exemplo de chamada para postagem (Descomente quando quiser enviar ao vivo):
-                # post_to_instagram(img, caption)
-                break
-
-if __name__ == "__main__":
-    run_autoposter()
-
-    if __name__ == "__main__":
-    while True:
-        print("🤖 Iniciando rodada de postagens...")
-        # Coloque aqui a chamada da sua função principal
-        # ex: executar_postagens()
+        produto = buscar_produto_shopee(search_term)
         
-        print("⏳ Postagens concluídas! Aguardando 4 horas para a próxima rodada...")
+        if produto:
+            title = produto["title"]
+            img = produto["image"]
+            link = produto["link"]
+            prod_id = produto["id"]
+            
+            caption = (
+                f"✨ {title}\n\n"
+                f"🛍 Confira e garanta o seu pelo link na bio!\n"
+                f"🔗 Link: {link}\n\n"
+                f"#{niche_name.lower().replace(' ', '')} #achadinhos #shopee #promoção"
+            )
+            
+            print(f"📌 Encontrado: {title}")
+            print(f"🖼 Imagem: {img}")
+            
+            # Envia para você revisar e aprovar no Telegram
+            enviar_para_aprovacao_telegram(img, caption, prod_id)
+        else:
+            print(f"⚠️ Nenhum produto encontrado para o nicho {niche_name}.")
+
+# --- LOOP CONTÍNUO (PARA WEB SERVICE NO RENDER) ---
+if __name__ == "__main__":
+    while True:
+        print("\n==============================================")
+        print("🤖 Rodada de busca e envio de postagens iniciada!")
+        
+        run_autoposter()
+        
+        print("\n⏳ Rodada concluída! Aguardando 4 horas para a próxima...")
+        print("==============================================")
         time.sleep(14400)  # 14400 segundos = 4 horas
