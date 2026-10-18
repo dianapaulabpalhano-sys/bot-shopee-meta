@@ -1,3 +1,4 @@
+import time
 import os
 import time
 import hashlib
@@ -120,3 +121,12 @@ def run_autoposter():
 
 if __name__ == "__main__":
     run_autoposter()
+
+    if __name__ == "__main__":
+    while True:
+        print("🤖 Iniciando rodada de postagens...")
+        # Coloque aqui a chamada da sua função principal
+        # ex: executar_postagens()
+        
+        print("⏳ Postagens concluídas! Aguardando 4 horas para a próxima rodada...")
+        time.sleep(14400)  # 14400 segundos = 4 horas
