@@ -36,8 +36,6 @@ def start_dummy_server():
 # --- VARIÁVEIS DE AMBIENTE ---
 SHOPEE_APP_KEY = os.getenv("SHOPEE_APP_KEY")
 SHOPEE_APP_SECRET = os.getenv("SHOPEE_APP_SECRET")
-META_USER_TOKEN = os.getenv("META_USER_TOKEN")
-INSTAGRAM_ACCOUNT_ID = os.getenv("INSTAGRAM_ACCOUNT_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -48,26 +46,36 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÕES DA SHOPEE API (ASSINATURA PADRÃO OPEN API SHOPEE) ---
-def generate_shopee_signature(app_key, secret, timestamp, payload):
-    """Gera a assinatura HMAC-SHA256 correta exigida pela Shopee Open API."""
-    factor = app_key + str(timestamp) + payload + secret
-    signature = hmac.new(
+# --- FUNÇÃO DE ASSINATURA OFICIAL SHOPEE ---
+def generate_shopee_signature(app_key, secret, timestamp, payload_str):
+    """Gera a assinatura HMAC-SHA256 padrão da Shopee Open Platform."""
+    raw_string = f"{app_key}{timestamp}{payload_str}{secret}"
+    return hmac.new(
         secret.encode('utf-8'),
-        factor.encode('utf-8'),
+        raw_string.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
-    return signature
 
 def buscar_produto_shopee(keyword):
-    """Busca produtos na Shopee GraphQL e retorna o primeiro item com imagem e link de afiliado."""
+    """Busca produtos na Shopee GraphQL com os parâmetros corretos de autenticação."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     timestamp = int(time.time())
     
-    # Query GraphQL otimizada sem quebras excessivas para manter o payload limpo
-    query = f"{{ productOfferV2(keyword: \"{keyword}\", limit: 1) {{ nodes {{ itemId productName imageUrl offerLink }} }} }}"
+    # Query GraphQL estruturada
+    query = f"""
+    query {{
+        productOfferV2(keyword: "{keyword}", limit: 1) {{
+            nodes {{
+                itemId
+                productName
+                imageUrl
+                offerLink
+            }}
+        }}
+    }}
+    """
     
-    body = {"query": query}
+    body = {"query": query.strip()}
     payload_str = json.dumps(body, separators=(',', ':'))
     
     signature = generate_shopee_signature(SHOPEE_APP_KEY, SHOPEE_APP_SECRET, timestamp, payload_str)
