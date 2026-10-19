@@ -5,6 +5,9 @@ import json
 import hashlib
 import requests
 import threading
+import subprocess
+import shutil
+from urllib.parse import urlparse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 
@@ -24,9 +27,17 @@ TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 META_USER_TOKEN      = os.getenv("META_USER_TOKEN", "").strip()
 INSTAGRAM_ACCOUNT_ID = os.getenv("INSTAGRAM_ACCOUNT_ID", "").strip()
 
+# URL base pública do Render para servir os vídeos gerados para a Meta API
+RENDER_EXTERNAL_URL  = os.getenv("RENDER_EXTERNAL_URL", "https://bot-shopee-meta.onrender.com").rstrip("/")
+
 print(f"🔑 [DEBUG] Shopee App Key: {len(SHOPEE_APP_KEY)} chars | Secret: {len(SHOPEE_APP_SECRET)} chars", flush=True)
 print(f"🔑 [DEBUG] Telegram Token: {bool(TELEGRAM_BOT_TOKEN)} | Chat ID: {TELEGRAM_CHAT_ID}", flush=True)
 print(f"🔑 [DEBUG] Meta Token: {bool(META_USER_TOKEN)} | Instagram ID: {INSTAGRAM_ACCOUNT_ID}", flush=True)
+print(f"🌐 [DEBUG] URL Externa Render: {RENDER_EXTERNAL_URL}", flush=True)
+
+# Diretório para armazenamento dos vídeos gerados para Reels
+VIDEO_DIR = os.path.join(os.getcwd(), "temp_videos")
+os.makedirs(VIDEO_DIR, exist_ok=True)
 
 # Lojas oficiais coreanas aprovadas exclusivamente
 LOJAS_APROVADAS = ["glory of seoul", "koksara", "jadoo"]
@@ -46,7 +57,6 @@ BUSCAS_SKINCARE = [
 ]
 
 # Armazenamento em memória dos produtos pendentes para aprovação
-# formato: { item_id: { ...dados_do_produto... } }
 PRODUTOS_PENDENTES = {}
 
 # Controle para não reenviar o mesmo produto repetidamente
@@ -54,7 +64,75 @@ PRODUTOS_ENVIADOS = set()
 
 
 # =======================================================================
-# 1. AUTENTICAÇÃO E BUSCA NA SHOPEE AFFILIATE (SHA-256 PURO)
+# 1. MOTOR DE GERAÇÃO DE VÍDEO VERTICAL PARA REELS (FFMPEG)
+# =======================================================================
+def get_ffmpeg_binary() -> str:
+    """Detecta o binário do ffmpeg instalado no sistema ou imageio-ffmpeg."""
+    ffmpeg_sys = shutil.which("ffmpeg")
+    if ffmpeg_sys:
+        return ffmpeg_sys
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def gerar_video_reels_da_imagem(image_url: str, item_id: str) -> str:
+    """
+    Baixa a foto oficial do produto e compila um vídeo vertical MP4 (1080x1920)
+    de 7 segundos com padrão aceito pela Meta Graph API para Reels.
+    Retorna o caminho local do arquivo de vídeo gerado.
+    """
+    output_path = os.path.join(VIDEO_DIR, f"{item_id}.mp4")
+    temp_img_path = os.path.join(VIDEO_DIR, f"{item_id}_temp.jpg")
+
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+        return output_path
+
+    ffmpeg_bin = get_ffmpeg_binary()
+    if not ffmpeg_bin:
+        print("⚠️ FFmpeg não encontrado para gerar vídeo de Reels.", flush=True)
+        return None
+
+    try:
+        print(f"🎬 Gerando vídeo Reels vertical para produto {item_id}...", flush=True)
+        # Baixa a foto
+        img_resp = requests.get(image_url, timeout=20)
+        with open(temp_img_path, "wb") as f:
+            f.write(img_resp.content)
+
+        # Comando FFmpeg otimizado: 7 segundos, vertical 1080x1920, H.264 YUV420p
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-loop", "1",
+            "-i", temp_img_path,
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
+            "-c:v", "libx264",
+            "-t", "7",
+            "-r", "30",
+            "-pix_fmt", "yuv420p",
+            output_path
+        ]
+
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=40)
+        if os.path.exists(temp_img_path):
+            os.remove(temp_img_path)
+
+        if result.returncode == 0 and os.path.exists(output_path):
+            print(f"✅ Vídeo Reels compilado com sucesso ({os.path.getsize(output_path)} bytes)!", flush=True)
+            return output_path
+        else:
+            print(f"❌ Erro FFmpeg: {result.stderr.decode('utf-8', errors='ignore')[:300]}", flush=True)
+            return None
+    except Exception as e:
+        print(f"❌ Falha ao compilar vídeo para Reels: {e}", flush=True)
+        return None
+
+
+# =======================================================================
+# 2. AUTENTICAÇÃO E BUSCA NA SHOPEE AFFILIATE (SHA-256 PURO)
 # =======================================================================
 def generate_shopee_signature(app_key: str, secret: str, timestamp: int, payload_str: str) -> str:
     """Gera a assinatura oficial SHA-256 (AppId + Timestamp + Payload + Secret)."""
@@ -109,7 +187,7 @@ def produto_pertence_lojas_alvo(item: dict, termo_busca: str) -> bool:
 
 
 # =======================================================================
-# 2. INTEGRAÇÃO META GRAPH API (INSTAGRAM FEED & STORIES)
+# 3. INTEGRAÇÃO META GRAPH API (INSTAGRAM FEED, STORIES & REELS)
 # =======================================================================
 def verificar_conexao_meta():
     """Valida se o token e conta do Instagram estão ativos na Meta Graph API."""
@@ -136,9 +214,7 @@ def publicar_instagram_feed(image_url: str, caption: str) -> dict:
     if not META_USER_TOKEN or not INSTAGRAM_ACCOUNT_ID:
         return {"success": False, "error": "Credenciais Meta não configuradas"}
 
-    print(f"📸 Iniciando publicação no FEED do Instagram...", flush=True)
-
-    # Passo 1: Criar container de mídia
+    print(f"📸 Publicando no FEED do Instagram...", flush=True)
     container_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}/media"
     container_payload = {
         "image_url": image_url,
@@ -150,27 +226,22 @@ def publicar_instagram_feed(image_url: str, caption: str) -> dict:
         res = requests.post(container_url, data=container_payload, timeout=30)
         res_data = res.json()
         if "id" not in res_data:
-            print(f"❌ Erro container Feed: {res_data}", flush=True)
             return {"success": False, "error": res_data.get("error", {}).get("message", str(res_data))}
 
         creation_id = res_data["id"]
-        print(f"📦 Container Feed criado: {creation_id}. Aguardando processamento...", flush=True)
         time.sleep(3)
 
-        # Passo 2: Publicar o container
         publish_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}/media_publish"
         pub_res = requests.post(publish_url, data={"creation_id": creation_id, "access_token": META_USER_TOKEN}, timeout=30)
         pub_data = pub_res.json()
 
         if "id" in pub_data:
             media_id = pub_data["id"]
-            print(f"🎉 SUCESSO! Post publicado no Feed do Instagram. Media ID: {media_id}", flush=True)
+            print(f"🎉 SUCESSO! Post publicado no Feed. Media ID: {media_id}", flush=True)
             return {"success": True, "media_id": media_id}
         else:
-            print(f"❌ Erro ao publicar Feed: {pub_data}", flush=True)
             return {"success": False, "error": pub_data.get("error", {}).get("message", str(pub_data))}
     except Exception as e:
-        print(f"❌ Exceção ao postar no Feed: {e}", flush=True)
         return {"success": False, "error": str(e)}
 
 
@@ -179,8 +250,7 @@ def publicar_instagram_story(image_url: str) -> dict:
     if not META_USER_TOKEN or not INSTAGRAM_ACCOUNT_ID:
         return {"success": False, "error": "Credenciais Meta não configuradas"}
 
-    print(f"🌟 Iniciando publicação nos STORIES do Instagram...", flush=True)
-
+    print(f"🌟 Publicando nos STORIES do Instagram...", flush=True)
     container_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}/media"
     container_payload = {
         "image_url": image_url,
@@ -192,11 +262,9 @@ def publicar_instagram_story(image_url: str) -> dict:
         res = requests.post(container_url, data=container_payload, timeout=30)
         res_data = res.json()
         if "id" not in res_data:
-            print(f"❌ Erro container Story: {res_data}", flush=True)
             return {"success": False, "error": res_data.get("error", {}).get("message", str(res_data))}
 
         creation_id = res_data["id"]
-        print(f"📦 Container Story criado: {creation_id}. Aguardando processamento...", flush=True)
         time.sleep(3)
 
         publish_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}/media_publish"
@@ -208,18 +276,72 @@ def publicar_instagram_story(image_url: str) -> dict:
             print(f"🎉 SUCESSO! Story publicado no Instagram. Media ID: {media_id}", flush=True)
             return {"success": True, "media_id": media_id}
         else:
-            print(f"❌ Erro ao publicar Story: {pub_data}", flush=True)
             return {"success": False, "error": pub_data.get("error", {}).get("message", str(pub_data))}
     except Exception as e:
-        print(f"❌ Exceção ao postar Story: {e}", flush=True)
+        return {"success": False, "error": str(e)}
+
+
+def publicar_instagram_reel(video_url: str, caption: str) -> dict:
+    """Publica vídeo nos REELS do Instagram com compartilhamento opcional no Feed."""
+    if not META_USER_TOKEN or not INSTAGRAM_ACCOUNT_ID:
+        return {"success": False, "error": "Credenciais Meta não configuradas"}
+
+    print(f"🎬 Iniciando publicação nos REELS via URL: {video_url}...", flush=True)
+    container_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}/media"
+    container_payload = {
+        "media_type": "REELS",
+        "video_url": video_url,
+        "caption": caption,
+        "share_to_feed": "true",
+        "access_token": META_USER_TOKEN
+    }
+
+    try:
+        res = requests.post(container_url, data=container_payload, timeout=30)
+        res_data = res.json()
+        if "id" not in res_data:
+            print(f"❌ Erro container Reels: {res_data}", flush=True)
+            return {"success": False, "error": res_data.get("error", {}).get("message", str(res_data))}
+
+        creation_id = res_data["id"]
+        print(f"📦 Container Reels criado: {creation_id}. Aguardando transcodificação da Meta...", flush=True)
+
+        # Polling para checar se a Meta terminou de processar o vídeo (até 45 segundos)
+        status_url = f"https://graph.facebook.com/v19.0/{creation_id}?fields=status_code&access_token={META_USER_TOKEN}"
+        pronto = False
+        for _ in range(15):
+            time.sleep(3)
+            st_res = requests.get(status_url, timeout=15).json()
+            status = st_res.get("status_code")
+            if status == "FINISHED":
+                pronto = True
+                break
+            elif status in ["ERROR", "EXPIRED"]:
+                return {"success": False, "error": f"Erro no processamento de vídeo da Meta ({status})"}
+
+        if not pronto:
+            return {"success": False, "error": "Tempo limite excedido no processamento do vídeo pela Meta."}
+
+        # Publicar o Reel aprovado
+        publish_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}/media_publish"
+        pub_res = requests.post(publish_url, data={"creation_id": creation_id, "access_token": META_USER_TOKEN}, timeout=30)
+        pub_data = pub_res.json()
+
+        if "id" in pub_data:
+            media_id = pub_data["id"]
+            print(f"🎉 SUCESSO! Reel publicado no Instagram. Media ID: {media_id}", flush=True)
+            return {"success": True, "media_id": media_id}
+        else:
+            return {"success": False, "error": pub_data.get("error", {}).get("message", str(pub_data))}
+    except Exception as e:
         return {"success": False, "error": str(e)}
 
 
 # =======================================================================
-# 3. INTERAÇÃO TELEGRAM — ENVIO COM BOTÕES E CALLBACKS
+# 4. INTERAÇÃO TELEGRAM — BOTÕES COMPLETOS E CALLBACKS
 # =======================================================================
 def enviar_para_aprovacao_telegram(produto: dict) -> bool:
-    """Envia produto para o Telegram com botões de aprovação rápida (Feed, Story, Tudo)."""
+    """Envia produto para o Telegram com botões para Feed, Story, Reels e Todos."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("⚠️ Variáveis do Telegram não configuradas.", flush=True)
         return False
@@ -229,7 +351,7 @@ def enviar_para_aprovacao_telegram(produto: dict) -> bool:
 
     url_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
 
-    # Teclado interativo com opções de publicação
+    # Teclado interativo com opções completas (Feed, Story, Reels, Todos)
     keyboard = {
         "inline_keyboard": [
             [
@@ -237,7 +359,10 @@ def enviar_para_aprovacao_telegram(produto: dict) -> bool:
                 {"text": "🌟 Postar no Story",      "callback_data": f"story_{item_id}"}
             ],
             [
-                {"text": "🚀 Postar Feed + Story",   "callback_data": f"both_{item_id}"},
+                {"text": "🎬 Postar no Reels",      "callback_data": f"reel_{item_id}"},
+                {"text": "🚀 Postar em Todos",      "callback_data": f"all_{item_id}"}
+            ],
+            [
                 {"text": "❌ Descartar",             "callback_data": f"reject_{item_id}"}
             ]
         ]
@@ -265,12 +390,11 @@ def enviar_para_aprovacao_telegram(produto: dict) -> bool:
 
 
 def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
-    """Executa a publicação na Meta ou descarte quando o usuário clica no botão do Telegram."""
-    # Responde o clique imediatamente no Telegram
+    """Executa a publicação escolhida pela Diana no Telegram."""
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-            json={"callback_query_id": callback_id, "text": "Processando sua escolha..."},
+            json={"callback_query_id": callback_id, "text": "Processando sua postagem..."},
             timeout=10,
         )
     except Exception:
@@ -298,39 +422,69 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
     caption = produto["caption"]
     nome_prod = produto["title"]
 
+    # 1. Postar no Feed
     if acao == "feed":
         res = publicar_instagram_feed(image_url, caption)
         if res.get("success"):
             msg = f"🎉 <b>PUBLICADO NO FEED COM SUCESSO!</b>\n\n🛍️ <b>{nome_prod}</b>\n📸 ID Instagram: <code>{res.get('media_id')}</code>"
         else:
-            msg = f"❌ <b>Erro ao postar no Feed:</b>\n{res.get('error')}"
+            msg = f"❌ <b>Erro no Feed:</b> {res.get('error')}"
         enviar_mensagem_telegram(chat_id, msg)
 
+    # 2. Postar no Story
     elif acao == "story":
         res = publicar_instagram_story(image_url)
         if res.get("success"):
             msg = f"🌟 <b>PUBLICADO NO STORY COM SUCESSO!</b>\n\n🛍️ <b>{nome_prod}</b>\n📸 ID Instagram: <code>{res.get('media_id')}</code>"
         else:
-            msg = f"❌ <b>Erro ao postar no Story:</b>\n{res.get('error')}"
+            msg = f"❌ <b>Erro no Story:</b> {res.get('error')}"
         enviar_mensagem_telegram(chat_id, msg)
 
-    elif acao == "both":
+    # 3. Postar no Reels
+    elif acao == "reel":
+        enviar_mensagem_telegram(chat_id, "🎬 <i>Compilando vídeo vertical de alta resolução para o Reels... aguarde instantes!</i>")
+        video_local = gerar_video_reels_da_imagem(image_url, item_id)
+        if not video_local:
+            enviar_mensagem_telegram(chat_id, "❌ Não foi possível compilar o vídeo para Reels no servidor.")
+            return
+
+        video_public_url = f"{RENDER_EXTERNAL_URL}/reels/{item_id}.mp4"
+        res = publicar_instagram_reel(video_public_url, caption)
+        if res.get("success"):
+            msg = f"🎬 <b>REELS PUBLICADO COM SUCESSO!</b>\n\n🛍️ <b>{nome_prod}</b>\n📸 ID Instagram: <code>{res.get('media_id')}</code>"
+        else:
+            msg = f"❌ <b>Erro no Reels:</b> {res.get('error')}"
+        enviar_mensagem_telegram(chat_id, msg)
+
+    # 4. Postar em Todos (Feed + Story + Reels)
+    elif acao == "all":
+        enviar_mensagem_telegram(chat_id, "🚀 <i>Publicando em todos os formatos (Feed + Story + Reels)...</i>")
         res_feed = publicar_instagram_feed(image_url, caption)
         time.sleep(2)
         res_story = publicar_instagram_story(image_url)
+        time.sleep(2)
+
+        video_local = gerar_video_reels_da_imagem(image_url, item_id)
+        if video_local:
+            video_public_url = f"{RENDER_EXTERNAL_URL}/reels/{item_id}.mp4"
+            res_reel = publicar_instagram_reel(video_public_url, caption)
+            status_reel = "✅ Reels OK" if res_reel.get("success") else f"❌ Reels: {res_reel.get('error')}"
+        else:
+            status_reel = "⚠️ Reels: Vídeo indisponível"
 
         status_feed = "✅ Feed OK" if res_feed.get("success") else f"❌ Feed: {res_feed.get('error')}"
         status_story = "✅ Story OK" if res_story.get("success") else f"❌ Story: {res_story.get('error')}"
 
         msg = (
-            f"🚀 <b>RESULTADO DA PUBLICAÇÃO COMPLETA:</b>\n\n"
+            f"🚀 <b>PUBLICAÇÃO COMPLETA CONCLUÍDA:</b>\n\n"
             f"🛍️ <b>{nome_prod}</b>\n"
             f"• {status_feed}\n"
-            f"• {status_story}"
+            f"• {status_story}\n"
+            f"• {status_reel}"
         )
         enviar_mensagem_telegram(chat_id, msg)
 
-    # Remove dos pendentes após processar
+    # Limpa o produto dos pendentes após aprovação
     PRODUTOS_PENDENTES.pop(item_id, None)
 
 
@@ -376,19 +530,43 @@ def telegram_polling_listener():
                     chat_id = cb.get("message", {}).get("chat", {}).get("id")
                     processar_acao_telegram(cb_data, cb_id, chat_id)
 
-        except Exception as e:
+        except Exception:
             time.sleep(3)
 
 
 # =======================================================================
-# 4. SERVIDOR WEB DUMMY (RENDER PORT HEALTH CHECK)
+# 5. SERVIDOR HTTP (HEALTH CHECK DO RENDER + SERVIR VÍDEOS DE REELS)
 # =======================================================================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        parsed = urlparse(self.path)
+
+        # Rota para servir vídeos compilados para download da Meta Graph API
+        if parsed.path.startswith("/reels/"):
+            filename = os.path.basename(parsed.path)
+            file_path = os.path.join(VIDEO_DIR, filename)
+
+            if os.path.exists(file_path):
+                file_size = os.path.getsize(file_path)
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                with open(file_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Video nao encontrado")
+                return
+
+        # Rota padrão de Health Check do Render
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-        html = "✨ <b>Bot Shopee Meta Skincare Coreano (@dianapaulab)</b> ativo no Render!"
+        html = "✨ <b>Bot Shopee Meta Skincare Coreano (@dianapaulab)</b> ativo com suporte a Feed, Story e Reels!"
         self.wfile.write(html.encode("utf-8"))
 
     def log_message(self, format, *args):
@@ -398,12 +576,12 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 def start_dummy_server():
     port = int(os.getenv("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    print(f"🌐 Servidor HTTP ativo na porta {port} (Render OK)", flush=True)
+    print(f"🌐 Servidor HTTP ativo na porta {port} (Render + Reels OK)", flush=True)
     server.serve_forever()
 
 
 # =======================================================================
-# 5. ROTINA PRINCIPAL DO BOT DE SKINCARE COREANO
+# 6. ROTINA PRINCIPAL DO BOT DE SKINCARE COREANO
 # =======================================================================
 def run_autoposter():
     print("\n🌸 ==============================================", flush=True)
@@ -422,14 +600,12 @@ def run_autoposter():
             link = item.get("offerLink", "")
             shop = item.get("shopName", "Loja Coreana Oficial")
 
-            # Verifica filtro de loja e se já não foi enviado antes
             if item_id in PRODUTOS_ENVIADOS:
                 continue
 
             if not produto_pertence_lojas_alvo(item, termo):
                 continue
 
-            # Legenda de alta conversão (Framework AIDA) otimizada para o perfil @dianapaulab
             caption = (
                 f"💖 <b>{title}</b>\n\n"
                 f"✨ Pele de porcelana e glow natural com o melhor do Skincare Coreano original!\n"
@@ -456,7 +632,6 @@ def run_autoposter():
             if sucesso:
                 PRODUTOS_ENVIADOS.add(item_id)
                 produtos_encontrados_rodada += 1
-                # Envia um por nicho/rodada para não poluir o Telegram da Diana
                 break
 
         if produtos_encontrados_rodada >= 3:
@@ -466,15 +641,15 @@ def run_autoposter():
 
 
 # =======================================================================
-# 6. INICIALIZAÇÃO
+# 7. INICIALIZAÇÃO
 # =======================================================================
 if __name__ == "__main__":
-    print("🚀 AutoPoster Shopee + Meta Graph API iniciando...", flush=True)
+    print("🚀 AutoPoster Shopee + Meta Graph API (Feed, Stories & Reels) iniciando...", flush=True)
 
     # 1. Valida conexão com Instagram Meta
     verificar_conexao_meta()
 
-    # 2. Inicia servidor HTTP para o Render
+    # 2. Inicia servidor HTTP (porta Render + servidor de vídeos de Reels)
     threading.Thread(target=start_dummy_server, daemon=True).start()
 
     # 3. Inicia ouvinte de cliques do Telegram
