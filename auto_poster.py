@@ -4,7 +4,6 @@ import time
 import json
 import requests
 import hashlib
-import hmac
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
@@ -48,26 +47,24 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÃO DE ASSINATURA HMAC-SHA256 PADRÃO OPEN API SHOPEE ---
+# --- FUNÇÃO DE ASSINATURA SHA-256 DIRETA DA SHOPEE AFFILIATE API ---
 def generate_shopee_signature(app_key, secret, timestamp, payload_str):
-    """Gera a assinatura HMAC-SHA256 exata exigida pelo gateway da Shopee."""
-    base_string = f"{app_key}{timestamp}{payload_str}"
-    return hmac.new(
-        secret.encode('utf-8'),
-        base_string.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
+    """Gera a assinatura SHA-256 concatenada exigida pela Shopee Affiliate Open API."""
+    raw_string = f"{app_key}{timestamp}{payload_str}{secret}"
+    return hashlib.sha256(raw_string.encode('utf-8')).hexdigest()
 
 def buscar_produto_shopee(keyword):
-    """Busca produtos na Shopee GraphQL com autenticação HMAC-SHA256 validada."""
+    """Busca produtos na Shopee GraphQL com autenticação SHA-256 direta e payload compacto."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     
     # Timestamp padrão em segundos (10 dígitos)
     timestamp = int(time.time())
     
+    # Query GraphQL em linha única compacta
     query = f"{{ productOfferV2(keyword: \"{keyword}\", limit: 1) {{ nodes {{ itemId productName imageUrl offerLink }} }} }}"
     
     body = {"query": query}
+    # Serialização estritamente compacta sem espaços extras para corresponder à assinatura
     payload_str = json.dumps(body, separators=(',', ':'))
     
     signature = generate_shopee_signature(SHOPEE_APP_KEY, SHOPEE_APP_SECRET, timestamp, payload_str)
@@ -159,7 +156,6 @@ def run_autoposter():
             print(f"📌 Encontrado: {title}", flush=True)
             print(f"🖼 Imagem: {img}", flush=True)
             
-            # Envia para revisar e aprovar no Telegram
             enviar_para_aprovacao_telegram(img, caption, prod_id)
         else:
             print(f"⚠️ Nenhum produto encontrado para o nicho {niche_name}.", flush=True)
@@ -180,4 +176,4 @@ if __name__ == "__main__":
         
         print("\n⏳ Rodada concluída! Aguardando 4 horas para a próxima...", flush=True)
         print("==============================================", flush=True)
-        time.sleep(14400)  # 14400 segundos = 4 horas
+        time.sleep(14400)
