@@ -48,18 +48,18 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÃO DE ASSINATURA COM TIMESTAMP EM SEGUNDOS ---
+# --- FUNÇÃO DE ASSINATURA HMAC-SHA256 OFICIAL DA SHOPEE ---
 def generate_shopee_signature(app_key, secret, timestamp, payload_str):
-    """Gera a assinatura HMAC-SHA256 padrão da Shopee Open Platform."""
-    raw_string = f"{app_key}{timestamp}{payload_str}{secret}"
+    """Gera a assinatura HMAC-SHA256 correta com o secret apenas como chave do HMAC."""
+    message = f"{app_key}{timestamp}{payload_str}"
     return hmac.new(
         secret.encode('utf-8'),
-        raw_string.encode('utf-8'),
+        message.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
 
 def buscar_produto_shopee(keyword):
-    """Busca produtos na Shopee GraphQL com timestamp em segundos."""
+    """Busca produtos na Shopee GraphQL com autenticação HMAC válida."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     
     # Timestamp padrão em segundos (10 dígitos)
