@@ -48,38 +48,29 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÕES DA SHOPEE API (CORRIGIDO PARA HMAC-SHA256) ---
-def generate_shopee_signature(timestamp, payload_str):
-    message = f"{SHOPEE_APP_KEY}{timestamp}{payload_str}"
-    return hmac.new(
-        SHOPEE_APP_SECRET.encode('utf-8'),
-        message.encode('utf-8'),
+# --- FUNÇÕES DA SHOPEE API (ASSINATURA PADRÃO OPEN API SHOPEE) ---
+def generate_shopee_signature(app_key, secret, timestamp, payload):
+    """Gera a assinatura HMAC-SHA256 correta exigida pela Shopee Open API."""
+    factor = app_key + str(timestamp) + payload + secret
+    signature = hmac.new(
+        secret.encode('utf-8'),
+        factor.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
+    return signature
 
 def buscar_produto_shopee(keyword):
     """Busca produtos na Shopee GraphQL e retorna o primeiro item com imagem e link de afiliado."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     timestamp = int(time.time())
     
-    query = f"""
-    query {{
-        productOfferV2(keyword: "{keyword}", limit: 1) {{
-            nodes {{
-                itemId
-                productName
-                imageUrl
-                offerLink
-            }}
-        }}
-    }}
-    """
+    # Query GraphQL otimizada sem quebras excessivas para manter o payload limpo
+    query = f"{{ productOfferV2(keyword: \"{keyword}\", limit: 1) {{ nodes {{ itemId productName imageUrl offerLink }} }} }}"
     
-    # Monta o corpo da requisição e gera a string JSON exata para a assinatura
-    body = {"query": query.strip()}
+    body = {"query": query}
     payload_str = json.dumps(body, separators=(',', ':'))
     
-    signature = generate_shopee_signature(timestamp, payload_str)
+    signature = generate_shopee_signature(SHOPEE_APP_KEY, SHOPEE_APP_SECRET, timestamp, payload_str)
 
     headers = {
         "Content-Type": "application/json",
