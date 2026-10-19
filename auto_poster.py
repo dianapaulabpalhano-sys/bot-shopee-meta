@@ -39,7 +39,6 @@ SHOPEE_APP_SECRET = os.getenv("SHOPEE_APP_SECRET", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# Diagnóstico inicial das chaves (mostra apenas os tamanhos para segurança)
 print(f"🔑 Debug Chaves -> App Key Length: {len(SHOPEE_APP_KEY)} | Secret Length: {len(SHOPEE_APP_SECRET)}", flush=True)
 
 # Configuração de Nichos e Termos de Busca na Shopee
@@ -49,9 +48,9 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÃO DE ASSINATURA OFICIAL SHOPEE ---
+# --- FUNÇÃO DE ASSINATURA COM MILISSEGUNDOS ---
 def generate_shopee_signature(app_key, secret, timestamp, payload_str):
-    """Gera a assinatura HMAC-SHA256 padrão da Shopee Open Platform."""
+    """Gera a assinatura HMAC-SHA256 com timestamp em milissegundos."""
     raw_string = f"{app_key}{timestamp}{payload_str}{secret}"
     return hmac.new(
         secret.encode('utf-8'),
@@ -60,11 +59,12 @@ def generate_shopee_signature(app_key, secret, timestamp, payload_str):
     ).hexdigest()
 
 def buscar_produto_shopee(keyword):
-    """Busca produtos na Shopee GraphQL com os parâmetros corretos de autenticação."""
+    """Busca produtos na Shopee GraphQL com timestamp em milissegundos."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
-    timestamp = int(time.time())
     
-    # Query GraphQL estruturada em linha única compacta
+    # Timestamp em milissegundos (exigido por diversas APIs da Shopee)
+    timestamp = int(time.time() * 1000)
+    
     query = f"{{ productOfferV2(keyword: \"{keyword}\", limit: 1) {{ nodes {{ itemId productName imageUrl offerLink }} }} }}"
     
     body = {"query": query}
