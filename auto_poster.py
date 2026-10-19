@@ -48,11 +48,11 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÃO DE ASSINATURA COM O PATH /graphql INCLUÍDO ---
+# --- FUNÇÃO DE ASSINATURA COM O PATH /graphql ---
 def generate_shopee_signature(app_key, secret, timestamp, payload_str):
-    """Gera a assinatura HMAC-SHA256 incluindo o path /graphql conforme o padrão da Shopee OpenAPI."""
+    """Gera a assinatura HMAC-SHA256 incluindo o path /graphql na string base."""
     path = "/graphql"
-    message = f"{app_key}{path}{timestamp}{payload_str}"
+    message = f"{app_key}{timestamp}{path}{payload_str}"
     return hmac.new(
         secret.encode('utf-8'),
         message.encode('utf-8'),
@@ -60,7 +60,7 @@ def generate_shopee_signature(app_key, secret, timestamp, payload_str):
     ).hexdigest()
 
 def buscar_produto_shopee(keyword):
-    """Busca produtos na Shopee GraphQL com assinatura HMAC ajustada."""
+    """Busca produtos na Shopee GraphQL com autenticação HMAC ajustada."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     
     # Timestamp padrão em segundos (10 dígitos)
