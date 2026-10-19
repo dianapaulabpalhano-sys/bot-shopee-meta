@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import requests
 import hashlib
@@ -10,6 +11,9 @@ from dotenv import load_dotenv
 # Carregar variáveis de ambiente locais (se existirem)
 load_dotenv()
 
+# Desativa o buffer do Python para forçar o aparecimento de logs no Render imediatamente
+sys.stdout.reconfigure(line_buffering=True)
+
 # --- SERVIDOR WEBSERVICE DUMMY (PARA ENVIAR PORTA HTTP AO RENDER FREE) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -19,14 +23,13 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write("🤖 Bot AutoPoster Shopee/Meta está ativo e rodando no Render!".encode("utf-8"))
 
     def log_message(self, format, *args):
-        # Desativa os logs repetitivos de requisição HTTP no console
         return
 
 def start_dummy_server():
     """Inicia um servidor HTTP em thread separada para satisfazer a checagem de porta do Render."""
-    port = int(os.getenv("PORT", 8080))
+    port = int(os.getenv("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    print(f"🌐 Servidor HTTP ativo na porta {port} (Web Service Render OK)")
+    print(f"🌐 Servidor HTTP ativo na porta {port} (Web Service Render OK)", flush=True)
     server.serve_forever()
 
 # --- VARIÁVEIS DE AMBIENTE ---
@@ -78,6 +81,10 @@ def buscar_produto_shopee(keyword):
     try:
         response = requests.post(url, json={"query": query}, headers=headers, timeout=15)
         res_json = response.json()
+        
+        if "errors" in res_json:
+            print(f"⚠️ Erro na resposta da API Shopee: {res_json.get('errors')}", flush=True)
+
         nodes = res_json.get("data", {}).get("productOfferV2", {}).get("nodes", [])
         if nodes:
             item = nodes[0]
@@ -88,7 +95,7 @@ def buscar_produto_shopee(keyword):
                 "link": item.get("offerLink")
             }
     except Exception as e:
-        print(f"❌ Erro ao buscar na Shopee para '{keyword}': {e}")
+        print(f"❌ Erro ao buscar na Shopee para '{keyword}': {e}", flush=True)
     
     return None
 
@@ -96,12 +103,11 @@ def buscar_produto_shopee(keyword):
 def enviar_para_aprovacao_telegram(image_url, caption, product_id):
     """Envia a imagem, legenda e botões inline para aprovação no Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Variáveis do Telegram não configuradas. Pulando envio de aprovação.")
+        print("⚠️ Variáveis do Telegram não configuradas. Pulando envio de aprovação.", flush=True)
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     
-    # Botões interativos abaixo da foto
     keyboard = {
         "inline_keyboard": [
             [
@@ -121,21 +127,21 @@ def enviar_para_aprovacao_telegram(image_url, caption, product_id):
     try:
         resp = requests.post(url, json=payload, timeout=15)
         if resp.status_code == 200:
-            print("📲 Produto enviado com sucesso para aprovação no Telegram!")
+            print(f"📲 Produto {product_id} enviado com SUCESSO para o Telegram (Chat ID: {TELEGRAM_CHAT_ID})!", flush=True)
             return True
         else:
-            print(f"⚠️ Erro ao enviar para o Telegram: {resp.text}")
+            print(f"⚠️ Erro no Telegram (Status {resp.status_code}): {resp.text}", flush=True)
     except Exception as e:
-        print(f"❌ Erro de conexão com o Telegram: {e}")
+        print(f"❌ Erro de conexão com o Telegram: {e}", flush=True)
     
     return False
 
 # --- ROTINA PRINCIPAL DO AUTOPOSTER ---
 def run_autoposter():
-    print("\n🤖 Iniciando Rotina do AutoPoster...")
+    print("\n🤖 Iniciando Rotina do AutoPoster...", flush=True)
     
     for niche_name, search_term in NICHOS.items():
-        print(f"\n🔍 Processando Nicho: {niche_name.upper()}")
+        print(f"\n🔍 Processando Nicho: {niche_name.upper()} (Busca: '{search_term}')", flush=True)
         produto = buscar_produto_shopee(search_term)
         
         if produto:
@@ -151,26 +157,28 @@ def run_autoposter():
                 f"#{niche_name.lower().replace(' ', '')} #achadinhos #shopee #promoção"
             )
             
-            print(f"📌 Encontrado: {title}")
-            print(f"🖼 Imagem: {img}")
+            print(f"📌 Encontrado: {title}", flush=True)
+            print(f"🖼 Imagem: {img}", flush=True)
             
-            # Envia para você revisar e aprovar no Telegram
+            # Envia para revisar e aprovar no Telegram
             enviar_para_aprovacao_telegram(img, caption, prod_id)
         else:
-            print(f"⚠️ Nenhum produto encontrado para o nicho {niche_name}.")
+            print(f"⚠️ Nenhum produto encontrado para o nicho {niche_name}.", flush=True)
 
 # --- EXECUÇÃO DO WEB SERVICE E LOOP ---
 if __name__ == "__main__":
-    # 1. Inicia o servidor HTTP fictício em segundo plano para o Render não dar erro de porta
+    print("🚀 Script auto_poster.py inicializado!", flush=True)
+    
+    # 1. Inicia o servidor HTTP fictício em segundo plano
     threading.Thread(target=start_dummy_server, daemon=True).start()
     
     # 2. Executa o loop contínuo a cada 4 horas
     while True:
-        print("\n==============================================")
-        print("🤖 Rodada de busca e envio de postagens iniciada!")
+        print("\n==============================================", flush=True)
+        print("🤖 Rodada de busca e envio de postagens iniciada!", flush=True)
         
         run_autoposter()
         
-        print("\n⏳ Rodada concluída! Aguardando 4 horas para a próxima...")
-        print("==============================================")
+        print("\n⏳ Rodada concluída! Aguardando 4 horas para a próxima...", flush=True)
+        print("==============================================", flush=True)
         time.sleep(14400)  # 14400 segundos = 4 horas
