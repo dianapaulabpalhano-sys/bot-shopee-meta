@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import json
 import requests
 import hashlib
 import hmac
@@ -42,14 +43,14 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Configuração de Nichos e Termos de Busca na Shopee
 NICHOS = {
-    "Skincare": "skincare serun protetor solar",
+    "Skincare": "skincare serum protetor solar",
     "Universo Feminino": "organizador maquiagem bolsa feminina",
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
 # --- FUNÇÕES DA SHOPEE API ---
-def generate_shopee_signature(timestamp, payload):
-    base_string = f"{SHOPEE_APP_KEY}{timestamp}{payload}{SHOPEE_APP_SECRET}"
+def generate_shopee_signature(timestamp, payload_str):
+    base_string = f"{SHOPEE_APP_KEY}{timestamp}{payload_str}{SHOPEE_APP_SECRET}"
     return hashlib.sha256(base_string.encode('utf-8')).hexdigest()
 
 def buscar_produto_shopee(keyword):
@@ -57,21 +58,24 @@ def buscar_produto_shopee(keyword):
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     timestamp = int(time.time())
     
-    query = """
-    query {
-        productOfferV2(keyword: "%s", limit: 1) {
-            nodes {
+    query = f"""
+    query {{
+        productOfferV2(keyword: "{keyword}", limit: 1) {{
+            nodes {{
                 itemId
                 productName
                 imageUrl
                 offerLink
-            }
-        }
-    }
-    """ % keyword
-
-    payload = query.replace("\n", "").replace("  ", "")
-    signature = generate_shopee_signature(timestamp, payload)
+            }}
+        }}
+    }}
+    """
+    
+    # Monta o corpo da requisição e gera a string JSON exata para a assinatura
+    body = {"query": query.strip()}
+    payload_str = json.dumps(body, separators=(',', ':'))
+    
+    signature = generate_shopee_signature(timestamp, payload_str)
 
     headers = {
         "Content-Type": "application/json",
@@ -79,7 +83,7 @@ def buscar_produto_shopee(keyword):
     }
 
     try:
-        response = requests.post(url, json={"query": query}, headers=headers, timeout=15)
+        response = requests.post(url, data=payload_str, headers=headers, timeout=15)
         res_json = response.json()
         
         if "errors" in res_json:
