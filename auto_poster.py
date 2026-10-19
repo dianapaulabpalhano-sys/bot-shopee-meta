@@ -48,9 +48,9 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÃO DE ASSINATURA COM MILISSEGUNDOS ---
+# --- FUNÇÃO DE ASSINATURA COM TIMESTAMP EM SEGUNDOS ---
 def generate_shopee_signature(app_key, secret, timestamp, payload_str):
-    """Gera a assinatura HMAC-SHA256 com timestamp em milissegundos."""
+    """Gera a assinatura HMAC-SHA256 padrão da Shopee Open Platform."""
     raw_string = f"{app_key}{timestamp}{payload_str}{secret}"
     return hmac.new(
         secret.encode('utf-8'),
@@ -59,11 +59,11 @@ def generate_shopee_signature(app_key, secret, timestamp, payload_str):
     ).hexdigest()
 
 def buscar_produto_shopee(keyword):
-    """Busca produtos na Shopee GraphQL com timestamp em milissegundos."""
+    """Busca produtos na Shopee GraphQL com timestamp em segundos."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     
-    # Timestamp em milissegundos (exigido por diversas APIs da Shopee)
-    timestamp = int(time.time() * 1000)
+    # Timestamp padrão em segundos (10 dígitos)
+    timestamp = int(time.time())
     
     query = f"{{ productOfferV2(keyword: \"{keyword}\", limit: 1) {{ nodes {{ itemId productName imageUrl offerLink }} }} }}"
     
