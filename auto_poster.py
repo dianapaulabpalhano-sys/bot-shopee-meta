@@ -3,10 +3,31 @@ import time
 import requests
 import hashlib
 import hmac
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 
 # Carregar variáveis de ambiente locais (se existirem)
 load_dotenv()
+
+# --- SERVIDOR WEBSERVICE DUMMY (PARA ENVIAR PORTA HTTP AO RENDER FREE) ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write("🤖 Bot AutoPoster Shopee/Meta está ativo e rodando no Render!".encode("utf-8"))
+
+    def log_message(self, format, *args):
+        # Desativa os logs repetitivos de requisição HTTP no console
+        return
+
+def start_dummy_server():
+    """Inicia um servidor HTTP em thread separada para satisfazer a checagem de porta do Render."""
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    print(f"🌐 Servidor HTTP ativo na porta {port} (Web Service Render OK)")
+    server.serve_forever()
 
 # --- VARIÁVEIS DE AMBIENTE ---
 SHOPEE_APP_KEY = os.getenv("SHOPEE_APP_KEY")
@@ -138,8 +159,12 @@ def run_autoposter():
         else:
             print(f"⚠️ Nenhum produto encontrado para o nicho {niche_name}.")
 
-# --- LOOP CONTÍNUO (PARA WEB SERVICE NO RENDER) ---
+# --- EXECUÇÃO DO WEB SERVICE E LOOP ---
 if __name__ == "__main__":
+    # 1. Inicia o servidor HTTP fictício em segundo plano para o Render não dar erro de porta
+    threading.Thread(target=start_dummy_server, daemon=True).start()
+    
+    # 2. Executa o loop contínuo a cada 4 horas
     while True:
         print("\n==============================================")
         print("🤖 Rodada de busca e envio de postagens iniciada!")
