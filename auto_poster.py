@@ -33,11 +33,14 @@ def start_dummy_server():
     print(f"🌐 Servidor HTTP ativo na porta {port} (Web Service Render OK)", flush=True)
     server.serve_forever()
 
-# --- VARIÁVEIS DE AMBIENTE ---
-SHOPEE_APP_KEY = os.getenv("SHOPEE_APP_KEY")
-SHOPEE_APP_SECRET = os.getenv("SHOPEE_APP_SECRET")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# --- VARIÁVEIS DE AMBIENTE (COM .strip() PARA EVITAR ESPAÇOS INDESEJADOS) ---
+SHOPEE_APP_KEY = os.getenv("SHOPEE_APP_KEY", "").strip()
+SHOPEE_APP_SECRET = os.getenv("SHOPEE_APP_SECRET", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+# Diagnóstico inicial das chaves (mostra apenas os tamanhos para segurança)
+print(f"🔑 Debug Chaves -> App Key Length: {len(SHOPEE_APP_KEY)} | Secret Length: {len(SHOPEE_APP_SECRET)}", flush=True)
 
 # Configuração de Nichos e Termos de Busca na Shopee
 NICHOS = {
@@ -61,21 +64,10 @@ def buscar_produto_shopee(keyword):
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     timestamp = int(time.time())
     
-    # Query GraphQL estruturada
-    query = f"""
-    query {{
-        productOfferV2(keyword: "{keyword}", limit: 1) {{
-            nodes {{
-                itemId
-                productName
-                imageUrl
-                offerLink
-            }}
-        }}
-    }}
-    """
+    # Query GraphQL estruturada em linha única compacta
+    query = f"{{ productOfferV2(keyword: \"{keyword}\", limit: 1) {{ nodes {{ itemId productName imageUrl offerLink }} }} }}"
     
-    body = {"query": query.strip()}
+    body = {"query": query}
     payload_str = json.dumps(body, separators=(',', ':'))
     
     signature = generate_shopee_signature(SHOPEE_APP_KEY, SHOPEE_APP_SECRET, timestamp, payload_str)
@@ -90,7 +82,7 @@ def buscar_produto_shopee(keyword):
         res_json = response.json()
         
         if "errors" in res_json:
-            print(f"⚠️ Erro na resposta da API Shopee: {res_json.get('errors')}", flush=True)
+            print(f"⚠️ Erro na resposta da API Shopee para '{keyword}': {res_json.get('errors')}", flush=True)
 
         nodes = res_json.get("data", {}).get("productOfferV2", {}).get("nodes", [])
         if nodes:
@@ -102,7 +94,7 @@ def buscar_produto_shopee(keyword):
                 "link": item.get("offerLink")
             }
     except Exception as e:
-        print(f"❌ Erro ao buscar na Shopee para '{keyword}': {e}", flush=True)
+        print(f"❌ Erro de conexão ao buscar na Shopee para '{keyword}': {e}", flush=True)
     
     return None
 
