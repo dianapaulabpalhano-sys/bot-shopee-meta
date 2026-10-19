@@ -48,9 +48,9 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÃO DE ASSINATURA HMAC-SHA256 ---
+# --- FUNÇÃO DE ASSINATURA OFICIAL SHOPEE AFFILIATE ---
 def generate_shopee_signature(app_key, secret, timestamp, payload_str):
-    """Gera a assinatura HMAC-SHA256 padrão da Shopee Open Platform."""
+    """Gera a assinatura HMAC-SHA256 padrão da Shopee Affiliate Open API."""
     base_string = f"{app_key}{timestamp}{payload_str}"
     signature = hmac.new(
         secret.encode('utf-8'),
@@ -60,15 +60,15 @@ def generate_shopee_signature(app_key, secret, timestamp, payload_str):
     return signature
 
 def buscar_produto_shopee(keyword):
-    """Busca produtos na Shopee GraphQL utilizando Variáveis GraphQL para autenticação exata."""
+    """Busca produtos na Shopee GraphQL com autenticação HMAC-SHA256 validada."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     
     timestamp = int(time.time())
     
-    # Query GraphQL estática com variáveis (evita problemas de aspas na assinatura)
+    # Query GraphQL estática limpa
     query = """
-    query($kw: String!) {
-        productOfferV2(keyword: $kw, limit: 1) {
+    query {
+        productOfferV2(keyword: "%s", limit: 1) {
             nodes {
                 itemId
                 productName
@@ -77,14 +77,9 @@ def buscar_produto_shopee(keyword):
             }
         }
     }
-    """
+    """ % keyword
     
-    body = {
-        "query": query.strip(),
-        "variables": {"kw": keyword}
-    }
-    
-    # Serialização estritamente compacta
+    body = {"query": " ".join(query.split())}
     payload_str = json.dumps(body, separators=(',', ':'))
     
     signature = generate_shopee_signature(SHOPEE_APP_KEY, SHOPEE_APP_SECRET, timestamp, payload_str)
