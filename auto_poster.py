@@ -48,31 +48,43 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÃO DE ASSINATURA HMAC-SHA256 COM LOGS DE DIAGNÓSTICO ---
+# --- FUNÇÃO DE ASSINATURA HMAC-SHA256 ---
 def generate_shopee_signature(app_key, secret, timestamp, payload_str):
-    """Gera a assinatura HMAC-SHA256 e imprime detalhes para debug."""
+    """Gera a assinatura HMAC-SHA256 padrão da Shopee Open Platform."""
     base_string = f"{app_key}{timestamp}{payload_str}"
     signature = hmac.new(
         secret.encode('utf-8'),
         base_string.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
-    
-    print(f"📦 Payload Str: {payload_str}", flush=True)
-    print(f"🔏 Base String Gerada: {base_string}", flush=True)
-    print(f"🔑 Assinatura Calculada: {signature}", flush=True)
     return signature
 
 def buscar_produto_shopee(keyword):
-    """Busca produtos na Shopee GraphQL com autenticação HMAC-SHA256."""
+    """Busca produtos na Shopee GraphQL utilizando Variáveis GraphQL para autenticação exata."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     
     timestamp = int(time.time())
     
-    # Query GraphQL em linha única compacta
-    query = f"{{ productOfferV2(keyword: \"{keyword}\", limit: 1) {{ nodes {{ itemId productName imageUrl offerLink }} }} }}"
+    # Query GraphQL estática com variáveis (evita problemas de aspas na assinatura)
+    query = """
+    query($kw: String!) {
+        productOfferV2(keyword: $kw, limit: 1) {
+            nodes {
+                itemId
+                productName
+                imageUrl
+                offerLink
+            }
+        }
+    }
+    """
     
-    body = {"query": query}
+    body = {
+        "query": query.strip(),
+        "variables": {"kw": keyword}
+    }
+    
+    # Serialização estritamente compacta
     payload_str = json.dumps(body, separators=(',', ':'))
     
     signature = generate_shopee_signature(SHOPEE_APP_KEY, SHOPEE_APP_SECRET, timestamp, payload_str)
