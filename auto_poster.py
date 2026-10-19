@@ -48,10 +48,14 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÕES DA SHOPEE API ---
+# --- FUNÇÕES DA SHOPEE API (CORRIGIDO PARA HMAC-SHA256) ---
 def generate_shopee_signature(timestamp, payload_str):
-    base_string = f"{SHOPEE_APP_KEY}{timestamp}{payload_str}{SHOPEE_APP_SECRET}"
-    return hashlib.sha256(base_string.encode('utf-8')).hexdigest()
+    message = f"{SHOPEE_APP_KEY}{timestamp}{payload_str}"
+    return hmac.new(
+        SHOPEE_APP_SECRET.encode('utf-8'),
+        message.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
 
 def buscar_produto_shopee(keyword):
     """Busca produtos na Shopee GraphQL e retorna o primeiro item com imagem e link de afiliado."""
