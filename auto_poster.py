@@ -4,6 +4,7 @@ import time
 import json
 import requests
 import hashlib
+import hmac
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
@@ -47,24 +48,31 @@ NICHOS = {
     "Casa": "utilidades domesticas organizador casa cozinha"
 }
 
-# --- FUNÇÃO DE ASSINATURA SHA-256 DIRETA DA SHOPEE AFFILIATE API ---
+# --- FUNÇÃO DE ASSINATURA HMAC-SHA256 COM LOGS DE DIAGNÓSTICO ---
 def generate_shopee_signature(app_key, secret, timestamp, payload_str):
-    """Gera a assinatura SHA-256 concatenada exigida pela Shopee Affiliate Open API."""
-    raw_string = f"{app_key}{timestamp}{payload_str}{secret}"
-    return hashlib.sha256(raw_string.encode('utf-8')).hexdigest()
+    """Gera a assinatura HMAC-SHA256 e imprime detalhes para debug."""
+    base_string = f"{app_key}{timestamp}{payload_str}"
+    signature = hmac.new(
+        secret.encode('utf-8'),
+        base_string.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    
+    print(f"📦 Payload Str: {payload_str}", flush=True)
+    print(f"🔏 Base String Gerada: {base_string}", flush=True)
+    print(f"🔑 Assinatura Calculada: {signature}", flush=True)
+    return signature
 
 def buscar_produto_shopee(keyword):
-    """Busca produtos na Shopee GraphQL com autenticação SHA-256 direta e payload compacto."""
+    """Busca produtos na Shopee GraphQL com autenticação HMAC-SHA256."""
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     
-    # Timestamp padrão em segundos (10 dígitos)
     timestamp = int(time.time())
     
     # Query GraphQL em linha única compacta
     query = f"{{ productOfferV2(keyword: \"{keyword}\", limit: 1) {{ nodes {{ itemId productName imageUrl offerLink }} }} }}"
     
     body = {"query": query}
-    # Serialização estritamente compacta sem espaços extras para corresponder à assinatura
     payload_str = json.dumps(body, separators=(',', ':'))
     
     signature = generate_shopee_signature(SHOPEE_APP_KEY, SHOPEE_APP_SECRET, timestamp, payload_str)
