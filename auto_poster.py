@@ -663,4 +663,4 @@ if __name__ == "__main__":
             print(f"❌ Erro na rodada: {e}", flush=True)
 
         print("\n⏳ Aguardando 4 horas para a próxima rodada...", flush=True)
-        time.sleep(14400)
+        time.sleep(3600)
