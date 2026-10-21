@@ -64,7 +64,7 @@ PRODUTOS_ENVIADOS = set()
 
 
 # =======================================================================
-# 1. MOTOR DE GERAÇÃO DE VÍDEO VERTICAL PARA REELS (FFMPEG)
+# 1. MOTOR DE GERAÇÃO DE VÍDEO E CAPTURA DE VÍDEO REAL (FFMPEG + SHOPEE)
 # =======================================================================
 def get_ffmpeg_binary() -> str:
     """Detecta o binário do ffmpeg instalado no sistema ou imageio-ffmpeg."""
@@ -81,8 +81,7 @@ def get_ffmpeg_binary() -> str:
 def gerar_video_reels_da_imagem(image_url: str, item_id: str) -> str:
     """
     Baixa a foto oficial do produto e compila um vídeo vertical MP4 (1080x1920)
-    de 7 segundos com padrão aceito pela Meta Graph API para Reels.
-    Retorna o caminho local do arquivo de vídeo gerado.
+    de 7 segundos com padrão aceito pela Meta Graph API para Reels (Fallback).
     """
     output_path = os.path.join(VIDEO_DIR, f"{item_id}.mp4")
     temp_img_path = os.path.join(VIDEO_DIR, f"{item_id}_temp.jpg")
@@ -96,13 +95,11 @@ def gerar_video_reels_da_imagem(image_url: str, item_id: str) -> str:
         return None
 
     try:
-        print(f"🎬 Gerando vídeo Reels vertical para produto {item_id}...", flush=True)
-        # Baixa a foto
+        print(f"🎬 Gerando vídeo Reels vertical de fallback para o produto {item_id}...", flush=True)
         img_resp = requests.get(image_url, timeout=20)
         with open(temp_img_path, "wb") as f:
             f.write(img_resp.content)
 
-        # Comando FFmpeg otimizado: 7 segundos, vertical 1080x1920, H.264 YUV420p
         cmd = [
             ffmpeg_bin,
             "-y",
@@ -121,14 +118,55 @@ def gerar_video_reels_da_imagem(image_url: str, item_id: str) -> str:
             os.remove(temp_img_path)
 
         if result.returncode == 0 and os.path.exists(output_path):
-            print(f"✅ Vídeo Reels compilado com sucesso ({os.path.getsize(output_path)} bytes)!", flush=True)
+            print(f"✅ Vídeo de fallback compilado com sucesso ({os.path.getsize(output_path)} bytes)!", flush=True)
             return output_path
         else:
             print(f"❌ Erro FFmpeg: {result.stderr.decode('utf-8', errors='ignore')[:300]}", flush=True)
             return None
     except Exception as e:
-        print(f"❌ Falha ao compilar vídeo para Reels: {e}", flush=True)
+        print(f"❌ Falha ao compilar vídeo de fallback para Reels: {e}", flush=True)
         return None
+
+
+def obter_video_real_shopee(offer_link: str, item_id: str, fallback_image_url: str) -> str:
+    """
+    Tenta extrair o vídeo real de demonstração da Loja Oficial na Shopee.
+    Se encontrar o .mp4 na página, descarrega-o. Caso contrário, usa o fallback do FFmpeg.
+    """
+    output_path = os.path.join(VIDEO_DIR, f"{item_id}.mp4")
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+        return output_path
+
+    try:
+        print(f"🔍 A verificar se o produto {item_id} possui vídeo de demonstração na Shopee...", flush=True)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "pt-BR,pt;q=0.9"
+        }
+        
+        session = requests.Session()
+        resp = session.get(offer_link, headers=headers, allow_redirects=True, timeout=15)
+        html_content = resp.text
+
+        import re
+        match_video = re.search(r'https?://[^\s<>"]+?\.mp4', html_content)
+        
+        if match_video:
+            video_url = match_video.group(0)
+            print(f"🎬 Vídeo real encontrado no anúncio! A descarregar de: {video_url[:60]}...", flush=True)
+            
+            vid_resp = session.get(video_url, headers=headers, timeout=25)
+            if vid_resp.status_code == 200 and len(vid_resp.content) > 5000:
+                with open(output_path, "wb") as f:
+                    f.write(vid_resp.content)
+                print(f"✅ Vídeo real da Shopee descarregado com sucesso ({os.path.getsize(output_path)} bytes)!", flush=True)
+                return output_path
+
+    except Exception as e:
+        print(f"⚠️ Não foi possível extrair vídeo nativo da página, a usar fallback: {e}", flush=True)
+
+    # Fallback inteligente: se o anúncio não tiver vídeo nativo, gera o vídeo vertical através da imagem
+    return gerar_video_reels_da_imagem(fallback_image_url, item_id)
 
 
 # =======================================================================
@@ -306,7 +344,6 @@ def publicar_instagram_reel(video_url: str, caption: str) -> dict:
         creation_id = res_data["id"]
         print(f"📦 Container Reels criado: {creation_id}. Aguardando transcodificação da Meta...", flush=True)
 
-        # Polling para checar se a Meta terminou de processar o vídeo (até 45 segundos)
         status_url = f"https://graph.facebook.com/v19.0/{creation_id}?fields=status_code&access_token={META_USER_TOKEN}"
         pronto = False
         for _ in range(15):
@@ -322,7 +359,6 @@ def publicar_instagram_reel(video_url: str, caption: str) -> dict:
         if not pronto:
             return {"success": False, "error": "Tempo limite excedido no processamento do vídeo pela Meta."}
 
-        # Publicar o Reel aprovado
         publish_url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ACCOUNT_ID}/media_publish"
         pub_res = requests.post(publish_url, data={"creation_id": creation_id, "access_token": META_USER_TOKEN}, timeout=30)
         pub_data = pub_res.json()
@@ -351,7 +387,6 @@ def enviar_para_aprovacao_telegram(produto: dict) -> bool:
 
     url_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
 
-    # Teclado interativo com opções completas (Feed, Story, Reels, Todos)
     keyboard = {
         "inline_keyboard": [
             [
@@ -363,7 +398,7 @@ def enviar_para_aprovacao_telegram(produto: dict) -> bool:
                 {"text": "🚀 Postar em Todos",      "callback_data": f"all_{item_id}"}
             ],
             [
-                {"text": "❌ Descartar",             "callback_data": f"reject_{item_id}"}
+                {"text": "❌ Descartar",            "callback_data": f"reject_{item_id}"}
             ]
         ]
     }
@@ -440,12 +475,12 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
             msg = f"❌ <b>Erro no Story:</b> {res.get('error')}"
         enviar_mensagem_telegram(chat_id, msg)
 
-    # 3. Postar no Reels
+    # 3. Postar no Reels (Com extração de vídeo real da Shopee ou fallback)
     elif acao == "reel":
-        enviar_mensagem_telegram(chat_id, "🎬 <i>Compilando vídeo vertical de alta resolução para o Reels... aguarde instantes!</i>")
-        video_local = gerar_video_reels_da_imagem(image_url, item_id)
+        enviar_mensagem_telegram(chat_id, "🎬 <i>A procurar vídeo real de demonstração na Shopee para o Reels...</i>")
+        video_local = obter_video_real_shopee(produto["link"], item_id, image_url)
         if not video_local:
-            enviar_mensagem_telegram(chat_id, "❌ Não foi possível compilar o vídeo para Reels no servidor.")
+            enviar_mensagem_telegram(chat_id, "❌ Não foi possível obter o vídeo para o Reels.")
             return
 
         video_public_url = f"{RENDER_EXTERNAL_URL}/reels/{item_id}.mp4"
@@ -456,15 +491,15 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
             msg = f"❌ <b>Erro no Reels:</b> {res.get('error')}"
         enviar_mensagem_telegram(chat_id, msg)
 
-    # 4. Postar em Todos (Feed + Story + Reels)
+    # 4. Postar em Todos (Feed + Story + Reels com vídeo real)
     elif acao == "all":
-        enviar_mensagem_telegram(chat_id, "🚀 <i>Publicando em todos os formatos (Feed + Story + Reels)...</i>")
+        enviar_mensagem_telegram(chat_id, "🚀 <i>A publicar em todos os formatos (Feed + Story + Reels com vídeo real)...</i>")
         res_feed = publicar_instagram_feed(image_url, caption)
         time.sleep(2)
         res_story = publicar_instagram_story(image_url)
         time.sleep(2)
 
-        video_local = gerar_video_reels_da_imagem(image_url, item_id)
+        video_local = obter_video_real_shopee(produto["link"], item_id, image_url)
         if video_local:
             video_public_url = f"{RENDER_EXTERNAL_URL}/reels/{item_id}.mp4"
             res_reel = publicar_instagram_reel(video_public_url, caption)
@@ -484,7 +519,6 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
         )
         enviar_mensagem_telegram(chat_id, msg)
 
-    # Limpa o produto dos pendentes após aprovação
     PRODUTOS_PENDENTES.pop(item_id, None)
 
 
@@ -505,7 +539,6 @@ def telegram_polling_listener():
     if not TELEGRAM_BOT_TOKEN:
         return
 
-    # Garante que nenhum webhook conflitante esteja ativo
     try:
         requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook", timeout=10)
     except Exception:
@@ -541,7 +574,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
 
-        # Rota para servir vídeos compilados para download da Meta Graph API
         if parsed.path.startswith("/reels/"):
             filename = os.path.basename(parsed.path)
             file_path = os.path.join(VIDEO_DIR, filename)
@@ -562,7 +594,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b"Video nao encontrado")
                 return
 
-        # Rota padrão de Health Check do Render
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
@@ -655,12 +686,12 @@ if __name__ == "__main__":
     # 3. Inicia ouvinte de cliques do Telegram
     threading.Thread(target=telegram_polling_listener, daemon=True).start()
 
-    # 4. Loop periódico a cada 4 horas
+    # 4. Loop periódico a cada 1 hora
     while True:
         try:
             run_autoposter()
         except Exception as e:
             print(f"❌ Erro na rodada: {e}", flush=True)
 
-        print("\n⏳ Aguardando 4 horas para a próxima rodada...", flush=True)
-        time.sleep(3600)
+        print("\n⏳ Aguardando 1 hora para a próxima rodada...", flush=True)
+        time.sleep(3600)    
