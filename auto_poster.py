@@ -7,6 +7,7 @@ import requests
 import threading
 import subprocess
 import shutil
+import random
 from urllib.parse import urlparse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
@@ -39,32 +40,76 @@ print(f"🌐 [DEBUG] URL Externa Render: {RENDER_EXTERNAL_URL}", flush=True)
 VIDEO_DIR = os.path.join(os.getcwd(), "temp_videos")
 os.makedirs(VIDEO_DIR, exist_ok=True)
 
+# Arquivo para persistência de produtos enviados / descartados (evita repetições pós-restart)
+ARQUIVO_HISTORICO = os.path.join(os.getcwd(), "enviados.json")
+
 # Lojas oficiais coreanas aprovadas exclusivamente
 LOJAS_APROVADAS = ["glory of seoul", "koksara", "jadoo"]
 
-# Termos focados 100% em Skincare Coreano e nessas 3 lojas
-BUSCAS_SKINCARE = [
+# Catálogo variado de buscas focadas em Skincare Coreano e nas 3 lojas
+BUSCAS_SKINCARE_BASE = [
+    # Glory of Seoul
     "Glory of Seoul",
-    "Koksara",
-    "Jadoo skincare",
+    "Glory of Seoul centella",
+    "Glory of Seoul protetor solar",
+    "Glory of Seoul anua",
+    "Glory of Seoul torriden",
+    "Glory of Seoul cosrx",
     "Glory of Seoul skincare coreano",
+    # Koksara
+    "Koksara",
+    "Koksara beauty of joseon",
+    "Koksara serum",
+    "Koksara retinol",
+    "Koksara vitamina c",
+    "Koksara round lab",
     "Koksara skincare coreano",
+    "Koksara creme hidratante",
+    # Jadoo
+    "Jadoo skincare",
+    "Jadoo seleve pdrn",
+    "Jadoo tirtir",
+    "Jadoo tonico coreano",
     "Jadoo skincare coreano",
-    "serum coreano Koksara",
-    "protetor solar Glory of Seoul",
-    "tonico coreano Jadoo",
-    "creme hidratante coreano Koksara"
+    "Jadoo mediheal",
+    "Jadoo dr althea"
 ]
 
 # Armazenamento em memória dos produtos pendentes para aprovação
 PRODUTOS_PENDENTES = {}
 
-# Controle para não reenviar o mesmo produto repetidamente
-PRODUTOS_ENVIADOS = set()
+
+# =======================================================================
+# PERSISTÊNCIA DE HISTÓRICO (EVITA PRODUTOS REPETIDOS APÓS REINÍCIO)
+# =======================================================================
+def carregar_produtos_enviados() -> set:
+    """Lê do arquivo local os IDs de produtos já enviados ou descartados."""
+    if os.path.exists(ARQUIVO_HISTORICO):
+        try:
+            with open(ARQUIVO_HISTORICO, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+                return set(str(i) for i in dados)
+        except Exception as e:
+            print(f"⚠️ Erro ao ler {ARQUIVO_HISTORICO}: {e}", flush=True)
+    return set()
+
+
+def salvar_produto_enviado(item_id: str):
+    """Grava o ID do produto permanentemente no arquivo para nunca repetir."""
+    PRODUTOS_ENVIADOS.add(str(item_id))
+    try:
+        with open(ARQUIVO_HISTORICO, "w", encoding="utf-8") as f:
+            json.dump(list(PRODUTOS_ENVIADOS), f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Erro ao salvar {ARQUIVO_HISTORICO}: {e}", flush=True)
+
+
+PRODUTOS_ENVIADOS = carregar_produtos_enviados()
+print(f"📋 Histórico carregado: {len(PRODUTOS_ENVIADOS)} produtos já registrados no banco.", flush=True)
 
 
 # =======================================================================
-# 1. MOTOR DE GERAÇÃO DE VÍDEO E CAPTURA DE VÍDEO REAL (FFMPEG + SHOPEE)
+# 1. MOTOR DE VÍDEO E CAPTURA DE VÍDEO REAL (FFMPEG + SHOPEE)
 # =======================================================================
 def get_ffmpeg_binary() -> str:
     """Detecta o binário do ffmpeg instalado no sistema ou imageio-ffmpeg."""
@@ -79,10 +124,7 @@ def get_ffmpeg_binary() -> str:
 
 
 def gerar_video_reels_da_imagem(image_url: str, item_id: str) -> str:
-    """
-    Baixa a foto oficial do produto e compila um vídeo vertical MP4 (1080x1920)
-    de 7 segundos com padrão aceito pela Meta Graph API para Reels (Fallback).
-    """
+    """Compila vídeo vertical MP4 (1080x1920) de 7s aceito pela Meta para Reels."""
     output_path = os.path.join(VIDEO_DIR, f"{item_id}.mp4")
     temp_img_path = os.path.join(VIDEO_DIR, f"{item_id}_temp.jpg")
 
@@ -95,7 +137,7 @@ def gerar_video_reels_da_imagem(image_url: str, item_id: str) -> str:
         return None
 
     try:
-        print(f"🎬 Gerando vídeo Reels vertical de fallback para o produto {item_id}...", flush=True)
+        print(f"🎬 Gerando vídeo Reels vertical para o produto {item_id}...", flush=True)
         img_resp = requests.get(image_url, timeout=20)
         with open(temp_img_path, "wb") as f:
             f.write(img_resp.content)
@@ -118,59 +160,51 @@ def gerar_video_reels_da_imagem(image_url: str, item_id: str) -> str:
             os.remove(temp_img_path)
 
         if result.returncode == 0 and os.path.exists(output_path):
-            print(f"✅ Vídeo de fallback compilado com sucesso ({os.path.getsize(output_path)} bytes)!", flush=True)
+            print(f"✅ Vídeo compilado com sucesso ({os.path.getsize(output_path)} bytes)!", flush=True)
             return output_path
         else:
             print(f"❌ Erro FFmpeg: {result.stderr.decode('utf-8', errors='ignore')[:300]}", flush=True)
             return None
     except Exception as e:
-        print(f"❌ Falha ao compilar vídeo de fallback para Reels: {e}", flush=True)
+        print(f"❌ Falha ao compilar vídeo para Reels: {e}", flush=True)
         return None
 
 
 def obter_video_real_shopee(offer_link: str, item_id: str, fallback_image_url: str) -> str:
-    """
-    Tenta extrair o vídeo real de demonstração da Loja Oficial na Shopee.
-    Se encontrar o .mp4 na página, descarrega-o. Caso contrário, usa o fallback do FFmpeg.
-    """
+    """Tenta extrair vídeo nativo do anúncio na Shopee ou usa gerador de vídeo."""
     output_path = os.path.join(VIDEO_DIR, f"{item_id}.mp4")
     if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
         return output_path
 
     try:
-        print(f"🔍 A verificar se o produto {item_id} possui vídeo de demonstração na Shopee...", flush=True)
+        print(f"🔍 Verificando se o produto {item_id} possui vídeo nativo...", flush=True)
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "pt-BR,pt;q=0.9"
         }
-        
         session = requests.Session()
         resp = session.get(offer_link, headers=headers, allow_redirects=True, timeout=15)
         html_content = resp.text
 
         import re
         match_video = re.search(r'https?://[^\s<>"]+?\.mp4', html_content)
-        
         if match_video:
             video_url = match_video.group(0)
-            print(f"🎬 Vídeo real encontrado no anúncio! A descarregar de: {video_url[:60]}...", flush=True)
-            
+            print(f"🎬 Vídeo nativo encontrado! Baixando de: {video_url[:60]}...", flush=True)
             vid_resp = session.get(video_url, headers=headers, timeout=25)
             if vid_resp.status_code == 200 and len(vid_resp.content) > 5000:
                 with open(output_path, "wb") as f:
                     f.write(vid_resp.content)
-                print(f"✅ Vídeo real da Shopee descarregado com sucesso ({os.path.getsize(output_path)} bytes)!", flush=True)
+                print(f"✅ Vídeo nativo baixado ({os.path.getsize(output_path)} bytes)!", flush=True)
                 return output_path
-
     except Exception as e:
-        print(f"⚠️ Não foi possível extrair vídeo nativo da página, a usar fallback: {e}", flush=True)
+        print(f"⚠️ Erro ao extrair vídeo nativo: {e}", flush=True)
 
-    # Fallback inteligente: se o anúncio não tiver vídeo nativo, gera o vídeo vertical através da imagem
     return gerar_video_reels_da_imagem(fallback_image_url, item_id)
 
 
 # =======================================================================
-# 2. AUTENTICAÇÃO E BUSCA NA SHOPEE AFFILIATE (SHA-256 PURO)
+# 2. AUTENTICAÇÃO E BUSCA NA SHOPEE (COM PAGINAÇÃO E VARIABILIDADE)
 # =======================================================================
 def generate_shopee_signature(app_key: str, secret: str, timestamp: int, payload_str: str) -> str:
     """Gera a assinatura oficial SHA-256 (AppId + Timestamp + Payload + Secret)."""
@@ -178,13 +212,16 @@ def generate_shopee_signature(app_key: str, secret: str, timestamp: int, payload
     return hashlib.sha256(factor.encode("utf-8")).hexdigest()
 
 
-def buscar_produtos_shopee(keyword: str, limit: int = 5):
-    """Busca produtos na Shopee Affiliate GraphQL filtrando produtos de Skincare."""
+def buscar_produtos_shopee(keyword: str, page: int = 1, limit: int = 20, sort_type: int = 2):
+    """
+    Busca produtos na Shopee com paginação e ordenação variada
+    para sempre trazer itens novos e evitar repetições.
+    """
     url = "https://open-api.affiliate.shopee.com.br/graphql"
     timestamp = int(time.time())
 
     query_str = (
-        f'{{ productOfferV2(keyword: "{keyword}", limit: {limit}) '
+        f'{{ productOfferV2(keyword: "{keyword}", page: {page}, limit: {limit}, sortType: {sort_type}) '
         f'{{ nodes {{ itemId productName imageUrl offerLink shopName priceMin }} }} }}'
     )
 
@@ -213,7 +250,7 @@ def buscar_produtos_shopee(keyword: str, limit: int = 5):
 
 
 def produto_pertence_lojas_alvo(item: dict, termo_busca: str) -> bool:
-    """Verifica se o produto é das lojas Glory of Seoul, Koksara ou Jadoo."""
+    """Verifica se o produto pertence a Glory of Seoul, Koksara ou Jadoo."""
     shop_name = (item.get("shopName") or "").lower()
     product_name = (item.get("productName") or "").lower()
     termo = termo_busca.lower()
@@ -415,6 +452,7 @@ def enviar_para_aprovacao_telegram(produto: dict) -> bool:
         resp = requests.post(url_api, json=payload, timeout=15)
         if resp.status_code == 200:
             print(f"📱 Produto {item_id} enviado para o Telegram com sucesso!", flush=True)
+            salvar_produto_enviado(item_id)
             return True
         else:
             print(f"⚠️ Erro ao enviar para Telegram ({resp.status_code}): {resp.text}", flush=True)
@@ -429,7 +467,7 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-            json={"callback_query_id": callback_id, "text": "Processando sua postagem..."},
+            json={"callback_query_id": callback_id, "text": "Processando sua escolha..."},
             timeout=10,
         )
     except Exception:
@@ -442,15 +480,16 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
     acao, item_id = partes[0], partes[1]
     produto = PRODUTOS_PENDENTES.get(item_id)
 
-    if not produto and acao != "reject":
-        msg = f"⚠️ Produto <b>{item_id}</b> expirou da memória ou já foi postado."
-        enviar_mensagem_telegram(chat_id, msg)
+    if acao == "reject":
+        print(f"🗑️ Produto {item_id} descartado pela Diana. Marcado como ignorado.", flush=True)
+        salvar_produto_enviado(item_id)
+        PRODUTOS_PENDENTES.pop(item_id, None)
+        enviar_mensagem_telegram(chat_id, f"❌ Produto <b>{item_id}</b> descartado. Não voltará a aparecer!")
         return
 
-    if acao == "reject":
-        print(f"🗑️ Produto {item_id} descartado pela Diana.", flush=True)
-        PRODUTOS_PENDENTES.pop(item_id, None)
-        enviar_mensagem_telegram(chat_id, f"❌ Produto <b>{item_id}</b> descartado.")
+    if not produto:
+        msg = f"⚠️ Produto <b>{item_id}</b> expirou da memória temporária ou já foi postado."
+        enviar_mensagem_telegram(chat_id, msg)
         return
 
     image_url = produto["image"]
@@ -475,9 +514,9 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
             msg = f"❌ <b>Erro no Story:</b> {res.get('error')}"
         enviar_mensagem_telegram(chat_id, msg)
 
-    # 3. Postar no Reels (Com extração de vídeo real da Shopee ou fallback)
+    # 3. Postar no Reels
     elif acao == "reel":
-        enviar_mensagem_telegram(chat_id, "🎬 <i>A procurar vídeo real de demonstração na Shopee para o Reels...</i>")
+        enviar_mensagem_telegram(chat_id, "🎬 <i>A preparar vídeo de demonstração para o Reels... aguarde instantes!</i>")
         video_local = obter_video_real_shopee(produto["link"], item_id, image_url)
         if not video_local:
             enviar_mensagem_telegram(chat_id, "❌ Não foi possível obter o vídeo para o Reels.")
@@ -491,9 +530,9 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
             msg = f"❌ <b>Erro no Reels:</b> {res.get('error')}"
         enviar_mensagem_telegram(chat_id, msg)
 
-    # 4. Postar em Todos (Feed + Story + Reels com vídeo real)
+    # 4. Postar em Todos (Feed + Story + Reels)
     elif acao == "all":
-        enviar_mensagem_telegram(chat_id, "🚀 <i>A publicar em todos os formatos (Feed + Story + Reels com vídeo real)...</i>")
+        enviar_mensagem_telegram(chat_id, "🚀 <i>Publicando em todos os formatos (Feed + Story + Reels)...</i>")
         res_feed = publicar_instagram_feed(image_url, caption)
         time.sleep(2)
         res_story = publicar_instagram_story(image_url)
@@ -511,7 +550,7 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
         status_story = "✅ Story OK" if res_story.get("success") else f"❌ Story: {res_story.get('error')}"
 
         msg = (
-            f"🚀 <b>PUBLICAÇÃO COMPLETA CONCLUÍDA:</b>\n\n"
+            f"🚀 <b>PUBLICAÇÃO CONCLUÍDA:</b>\n\n"
             f"🛍️ <b>{nome_prod}</b>\n"
             f"• {status_feed}\n"
             f"• {status_story}\n"
@@ -519,6 +558,7 @@ def processar_acao_telegram(callback_data: str, callback_id: str, chat_id: int):
         )
         enviar_mensagem_telegram(chat_id, msg)
 
+    salvar_produto_enviado(item_id)
     PRODUTOS_PENDENTES.pop(item_id, None)
 
 
@@ -612,7 +652,7 @@ def start_dummy_server():
 
 
 # =======================================================================
-# 6. ROTINA PRINCIPAL DO BOT DE SKINCARE COREANO
+# 6. ROTINA PRINCIPAL DO BOT DE SKINCARE COREANO (ROTATIVA E INTELIGENTE)
 # =======================================================================
 def run_autoposter():
     print("\n🌸 ==============================================", flush=True)
@@ -620,9 +660,20 @@ def run_autoposter():
 
     produtos_encontrados_rodada = 0
 
-    for termo in BUSCAS_SKINCARE:
-        print(f"\n🔍 Buscando na Shopee por: '{termo}'...", flush=True)
-        itens = buscar_produtos_shopee(termo, limit=6)
+    # Embaralha a lista de termos para alternar lojas e marcas a cada rodada
+    termos_rodada = list(BUSCAS_SKINCARE_BASE)
+    random.shuffle(termos_rodada)
+
+    # Escolhe aleatoriamente uma página e ordenação na Shopee para descobrir produtos novos
+    pagina_aleatoria = random.randint(1, 5)
+    ordenacao_aleatoria = random.choice([1, 2, 5])  # 1=Relevância, 2=Mais Vendidos, 5=Mais Recentes
+
+    for termo in termos_rodada:
+        print(f"\n🔍 Buscando na Shopee por: '{termo}' (Pág {pagina_aleatoria}, Ordenação {ordenacao_aleatoria})...", flush=True)
+        itens = buscar_produtos_shopee(termo, page=pagina_aleatoria, limit=20, sort_type=ordenacao_aleatoria)
+
+        # Embaralha os produtos retornados da Shopee para nunca pegar sempre o primeiro
+        random.shuffle(itens)
 
         for item in itens:
             item_id = str(item.get("itemId"))
@@ -631,6 +682,7 @@ def run_autoposter():
             link = item.get("offerLink", "")
             shop = item.get("shopName", "Loja Coreana Oficial")
 
+            # Verifica se já foi enviado anteriormente (histórico persistente)
             if item_id in PRODUTOS_ENVIADOS:
                 continue
 
@@ -658,17 +710,17 @@ def run_autoposter():
                 "caption": caption
             }
 
-            print(f"📦 [SELECIONADO] {title} ({shop})", flush=True)
+            print(f"📦 [NOVO PRODUTO SELECIONADO] {title} ({shop})", flush=True)
             sucesso = enviar_para_aprovacao_telegram(produto_dict)
             if sucesso:
-                PRODUTOS_ENVIADOS.add(item_id)
                 produtos_encontrados_rodada += 1
+                # Envia um por nicho/loja por rodada para não sobrecarregar o Telegram
                 break
 
         if produtos_encontrados_rodada >= 3:
             break
 
-    print(f"\n✨ Rodada finalizada. {produtos_encontrados_rodada} produtos enviados para aprovação no Telegram.", flush=True)
+    print(f"\n✨ Rodada finalizada. {produtos_encontrados_rodada} novos produtos enviados para aprovação no Telegram.", flush=True)
 
 
 # =======================================================================
@@ -686,12 +738,12 @@ if __name__ == "__main__":
     # 3. Inicia ouvinte de cliques do Telegram
     threading.Thread(target=telegram_polling_listener, daemon=True).start()
 
-    # 4. Loop periódico a cada 1 hora
+    # 4. Loop periódico a cada 2 horas (tempo ideal para novos achadinhos)
     while True:
         try:
             run_autoposter()
         except Exception as e:
             print(f"❌ Erro na rodada: {e}", flush=True)
 
-        print("\n⏳ Aguardando 1 hora para a próxima rodada...", flush=True)
-        time.sleep(3600)    
+        print("\n⏳ Aguardando 2 horas para a próxima rodada...", flush=True)
+        time.sleep(7200)
