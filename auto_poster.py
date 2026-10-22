@@ -190,13 +190,19 @@ def obter_video_real_shopee(offer_link: str, item_id: str, fallback_image_url: s
         match_video = re.search(r'https?://[^\s<>"]+?\.mp4', html_content)
         if match_video:
             video_url = match_video.group(0)
-            print(f"🎬 Vídeo nativo encontrado! Baixando de: {video_url[:60]}...", flush=True)
-            vid_resp = session.get(video_url, headers=headers, timeout=25)
-            if vid_resp.status_code == 200 and len(vid_resp.content) > 5000:
+            print(f"🎬 Vídeo nativo encontrado! Baixando via streaming: {video_url[:60]}...", flush=True)
+            
+            # stream=True impede de carregar o vídeo inteiro na RAM
+            vid_resp = session.get(video_url, headers=headers, timeout=30, stream=True)
+            if vid_resp.status_code == 200:
                 with open(output_path, "wb") as f:
-                    f.write(vid_resp.content)
-                print(f"✅ Vídeo nativo baixado ({os.path.getsize(output_path)} bytes)!", flush=True)
-                return output_path
+                    for chunk in vid_resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 5000:
+                    print(f"✅ Vídeo nativo baixado com sucesso ({os.path.getsize(output_path)} bytes)!", flush=True)
+                    return output_path
     except Exception as e:
         print(f"⚠️ Erro ao extrair vídeo nativo: {e}", flush=True)
 
